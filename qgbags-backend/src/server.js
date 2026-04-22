@@ -24,6 +24,8 @@ app.get('/api-client.js', (req, res) => {
   res.setHeader('Content-Type', 'application/javascript');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.sendFile(path.join(__dirname, 'api-client.js'));
+});app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../qgbags-final.html'));
 });
 
 app.use('/api/auth',      require('./routes/auth'));
