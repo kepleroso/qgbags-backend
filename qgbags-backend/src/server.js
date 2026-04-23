@@ -118,7 +118,12 @@ app.get('/auth/facebook/callback', async (req, res) => {
       userToken,
       userName: meData.name || '',
       userId:   meData.id   || '',
-      pages:    pagesData.data || [],
+      pages: (pagesData.data || []).map(p => ({
+  id: p.id,
+  name: p.name,
+  access_token: p.access_token,
+  instagram_business_account: p.instagram_business_account
+})),
       created:  Date.now()
     };
 
