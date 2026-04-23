@@ -45,7 +45,6 @@ app.get('/auth/meta/start', (req, res) => {
   const scopes = [
     'pages_show_list',
     'pages_read_engagement',
-    'pages_manage_posts',
     'public_profile'
   ].join(',');
 
