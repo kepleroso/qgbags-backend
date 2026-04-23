@@ -5,6 +5,7 @@
 //  + Meta Ads manual token support
 // ============================================================
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors    = require('cors');
 const { Pool } = require('pg');
@@ -316,5 +317,8 @@ function closingPage(errorMsg, jsonPayload) {
   }
   return `<!DOCTYPE html><html><body><script>window.opener&&window.opener.postMessage({type:'META_AUTH_SUCCESS',data:${jsonPayload}},'*');setTimeout(()=>window.close(),1000);<\/script><p style="font-family:sans-serif;color:#2ecc71;padding:20px;">Connessione riuscita! Questa finestra si chiude automaticamente.</p></body></html>`;
 }
+
+// ── Serve file statici (HTML app) ────────────────────────────
+app.use(express.static(path.join(__dirname, '..')));
 
 app.listen(PORT, () => console.log(`QGbags Meta + Google Ads Backend v4.1 running on port ${PORT}`));
