@@ -195,9 +195,8 @@ app.post('/api/meta', async (req, res) => {
     if (method === 'GET' || method === 'DELETE') {
       url += '?' + new URLSearchParams({ ...params, access_token: token }).toString();
     } else {
-  url += '?' + new URLSearchParams({ access_token: token }).toString();
-  opts.body = JSON.stringify({ ...bodyData });
-}
+      url += '?' + new URLSearchParams({ access_token: token }).toString();
+      opts.body = JSON.stringify({ ...bodyData });
     }
 
     const apiRes  = await fetch(url, opts);
