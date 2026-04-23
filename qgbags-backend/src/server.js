@@ -1,4 +1,4 @@
-//============================================================
+// ============================================================
 //  QGbags — Railway Backend v4  (server.js)
 //  Token persistenti su Postgres — sopravvive ai redeploy
 //  + Google Ads API Proxy
