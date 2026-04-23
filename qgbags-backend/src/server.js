@@ -1,7 +1,8 @@
-============================================================
+ ============================================================
 //  QGbags — Railway Backend v4  (server.js)
 //  Token persistenti su Postgres — sopravvive ai redeploy
 //  + Google Ads API Proxy
+//  + Meta Ads manual token support
 // ============================================================
 require('dotenv').config();
 const express = require('express');
@@ -88,13 +89,13 @@ app.use(express.json());
 
 // ── Health check ──────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'QGbags Meta + Google Ads Proxy', version: '4.0' });
+  res.json({ status: 'ok', service: 'QGbags Meta + Google Ads Proxy', version: '4.1' });
 });
 
 // ── STEP 1: Avvia OAuth ───────────────────────────────────────
 app.get('/auth/meta/start', (req, res) => {
   if (!META_APP_ID) return res.status(500).send('META_APP_ID non configurato nelle env vars di Railway');
-  const scopes = ['pages_show_list', 'pages_read_engagement', 'public_profile'].join(',');
+  const scopes = ['pages_show_list', 'pages_read_engagement', 'public_profile', 'ads_management', 'ads_read', 'business_management'].join(',');
   const state  = 'qgbags_' + Math.random().toString(36).slice(2);
   const url = `https://www.facebook.com/v19.0/dialog/oauth?` +
     `client_id=${META_APP_ID}` +
@@ -111,22 +112,18 @@ app.get('/auth/facebook/callback', async (req, res) => {
   if (!code)  return res.send(closingPage('Nessun codice ricevuto da Meta.'));
 
   try {
-    // Scambia code per short-lived token
     const tokenRes  = await fetch(`${GRAPH}/oauth/access_token?client_id=${META_APP_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&client_secret=${META_APP_SECRET}&code=${code}`);
     const tokenData = await tokenRes.json();
     if (tokenData.error) throw new Error(tokenData.error.message);
     let userToken = tokenData.access_token;
 
-    // Estendi a long-lived token
     const llRes  = await fetch(`${GRAPH}/oauth/access_token?grant_type=fb_exchange_token&client_id=${META_APP_ID}&client_secret=${META_APP_SECRET}&fb_exchange_token=${userToken}`);
     const llData = await llRes.json();
     if (llData.access_token) userToken = llData.access_token;
 
-    // Info utente
     const meRes  = await fetch(`${GRAPH}/me?fields=name,id&access_token=${userToken}`);
     const meData = await meRes.json();
 
-    // Lista pagine con token
     const pagesRes  = await fetch(`${GRAPH}/me/accounts?fields=id,name,access_token,instagram_business_account&access_token=${userToken}`);
     const pagesData = await pagesRes.json();
     if (pagesData.error) throw new Error(pagesData.error.message);
@@ -138,13 +135,11 @@ app.get('/auth/facebook/callback', async (req, res) => {
       instagram_business_account: p.instagram_business_account
     }));
 
-    // Salva su Postgres
     const sessionId = 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2);
     await saveSession(sessionId, {
       userToken, userName: meData.name || '', userId: meData.id || '', pages
     });
 
-    // Payload sicuro al frontend (senza token)
     const safePayload = JSON.stringify({
       sessionId,
       userName: meData.name || '',
@@ -182,12 +177,25 @@ app.post('/auth/meta/select-page', async (req, res) => {
 });
 
 // ── Proxy generico Meta ───────────────────────────────────────
+// Supporta sia sessionId (OAuth) che token manuale (Graph API Explorer)
 app.post('/api/meta', async (req, res) => {
-  const { sessionId, endpoint, method = 'GET', params = {}, body: bodyData } = req.body;
-  const session = await getSession(sessionId);
-  if (!session) return res.status(401).json({ error: 'Sessione non trovata o scaduta. Effettua il login Meta.' });
+  const { sessionId, token: manualToken, endpoint, method = 'GET', params = {}, body: bodyData } = req.body;
 
-  const token = session.selectedPageToken || session.userToken;
+  let token;
+
+  if (sessionId) {
+    // Percorso OAuth: recupera token da Postgres
+    const session = await getSession(sessionId);
+    if (!session) return res.status(401).json({ error: 'Sessione non trovata o scaduta. Effettua il login Meta.' });
+    token = session.selectedPageToken || session.userToken;
+  } else if (manualToken) {
+    // Percorso token manuale (es. da Graph API Explorer)
+    token = manualToken;
+  } else {
+    return res.status(401).json({ error: 'Autenticazione mancante: fornisci sessionId oppure token.' });
+  }
+
+  if (!endpoint) return res.status(400).json({ error: 'endpoint mancante' });
 
   try {
     let url  = `${GRAPH}/${endpoint}`;
@@ -223,11 +231,8 @@ app.post('/auth/facebook/token', async (req, res) => {
 //  GOOGLE ADS API PROXY
 // ============================================================
 
-// ── 1. Ottieni Access Token da Refresh Token ─────────────────
 app.post('/api/gads/token', async (req, res) => {
   const { clientId, clientSecret, refreshToken } = req.body;
-
-  // Usa env vars come fallback se non passati dal frontend
   const cId     = clientId     || process.env.GADS_CLIENT_ID;
   const cSecret = clientSecret || process.env.GADS_CLIENT_SECRET;
   const rToken  = refreshToken || process.env.GADS_REFRESH_TOKEN;
@@ -255,25 +260,15 @@ app.post('/api/gads/token', async (req, res) => {
   }
 });
 
-// ── 2. Proxy generico Google Ads API ─────────────────────────
-//  Il frontend manda:
-//  { accessToken, devToken, customerId, path, method, body }
-//  Il backend fa la chiamata a googleads.googleapis.com e ritorna il risultato
 app.post('/api/gads/proxy', async (req, res) => {
   const {
-    accessToken,
-    devToken,
-    customerId,
-    loginCustomerId,
-    path,        // es. "customers/123456/campaigns:mutate"
-    method = 'POST',
-    body: bodyData
+    accessToken, devToken, customerId, loginCustomerId,
+    path, method = 'POST', body: bodyData
   } = req.body;
 
-  // Supporto env vars come fallback
-  const token    = accessToken || process.env.GADS_ACCESS_TOKEN;
-  const dToken   = devToken    || process.env.GADS_DEV_TOKEN;
-  const custId   = customerId  || process.env.GADS_CUSTOMER_ID;
+  const token  = accessToken || process.env.GADS_ACCESS_TOKEN;
+  const dToken = devToken    || process.env.GADS_DEV_TOKEN;
+  const custId = customerId  || process.env.GADS_CUSTOMER_ID;
 
   if (!token)  return res.status(401).json({ error: 'accessToken mancante' });
   if (!dToken) return res.status(400).json({ error: 'devToken mancante' });
@@ -281,22 +276,15 @@ app.post('/api/gads/proxy', async (req, res) => {
   if (!path)   return res.status(400).json({ error: 'path mancante (es: customers/ID/campaigns:mutate)' });
 
   const url = `https://googleads.googleapis.com/v18/${path}`;
-
   const headers = {
     'Authorization':   `Bearer ${token}`,
     'developer-token': dToken,
     'Content-Type':    'application/json'
   };
-  if (loginCustomerId || custId) {
-    headers['login-customer-id'] = loginCustomerId || custId;
-  }
+  if (loginCustomerId || custId) headers['login-customer-id'] = loginCustomerId || custId;
 
   try {
-    const apiRes = await fetch(url, {
-      method,
-      headers,
-      body: bodyData ? JSON.stringify(bodyData) : undefined
-    });
+    const apiRes = await fetch(url, { method, headers, body: bodyData ? JSON.stringify(bodyData) : undefined });
     const data = await apiRes.json();
     res.status(apiRes.status).json(data);
   } catch (err) {
@@ -304,7 +292,6 @@ app.post('/api/gads/proxy', async (req, res) => {
   }
 });
 
-// ── 3. Helper: lista account accessibili ─────────────────────
 app.post('/api/gads/accounts', async (req, res) => {
   const { accessToken, devToken } = req.body;
   const token  = accessToken || process.env.GADS_ACCESS_TOKEN;
@@ -314,10 +301,7 @@ app.post('/api/gads/accounts', async (req, res) => {
 
   try {
     const r = await fetch('https://googleads.googleapis.com/v18/customers:listAccessibleCustomers', {
-      headers: {
-        'Authorization':   `Bearer ${token}`,
-        'developer-token': dToken
-      }
+      headers: { 'Authorization': `Bearer ${token}`, 'developer-token': dToken }
     });
     res.json(await r.json());
   } catch (err) {
@@ -333,4 +317,4 @@ function closingPage(errorMsg, jsonPayload) {
   return `<!DOCTYPE html><html><body><script>window.opener&&window.opener.postMessage({type:'META_AUTH_SUCCESS',data:${jsonPayload}},'*');setTimeout(()=>window.close(),1000);<\/script><p style="font-family:sans-serif;color:#2ecc71;padding:20px;">Connessione riuscita! Questa finestra si chiude automaticamente.</p></body></html>`;
 }
 
-app.listen(PORT, () => console.log(`QGbags Meta + Google Ads Backend v4 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`QGbags Meta + Google Ads Backend v4.1 running on port ${PORT}`));
